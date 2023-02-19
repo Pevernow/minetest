@@ -140,9 +140,7 @@ public:
 	void step(f32 dtime);
 
 	// Update the camera from the local player's position.
-	// busytime is used to adjust the viewing range.
-	void update(LocalPlayer* player, f32 frametime, f32 busytime,
-			f32 tool_reload_ratio);
+	void update(LocalPlayer* player, f32 frametime, f32 tool_reload_ratio);
 
 	// Update render distance
 	void updateViewingRange();
@@ -266,4 +264,7 @@ private:
 
 	std::list<Nametag *> m_nametags;
 	bool m_show_nametag_backgrounds;
+
+	// Last known light color of the player
+	video::SColor m_player_light_color;
 };

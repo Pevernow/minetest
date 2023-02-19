@@ -25,7 +25,7 @@ end
 
 -- Unordered preserves the original order of the ContentDB API,
 -- before the package list is ordered based on installed state.
-local store = { packages = {}, packages_full = {}, packages_full_unordered = {} }
+local store = { packages = {}, packages_full = {}, packages_full_unordered = {}, aliases = {} }
 
 local http = core.get_http_api()
 
@@ -62,9 +62,19 @@ local REASON_UPDATE = "update"
 local REASON_DEPENDENCY = "dependency"
 
 
+-- encodes for use as URL parameter or path component
+local function urlencode(str)
+	return str:gsub("[^%a%d()._~-]", function(char)
+		return string.format("%%%02X", string.byte(char))
+	end)
+end
+assert(urlencode("sample text?") == "sample%20text%3F")
+
+
 local function get_download_url(package, reason)
 	local base_url = core.settings:get("contentdb_url")
-	local ret = base_url .. ("/packages/%s/%s/releases/%d/download/"):format(package.author, package.name, package.release)
+	local ret = base_url .. ("/packages/%s/releases/%d/download/"):format(
+		package.url_part, package.release)
 	if reason then
 		ret = ret .. "?reason=" .. reason
 	end
@@ -141,11 +151,9 @@ local function start_install(package, reason)
 
 				if conf_path then
 					local conf = Settings(conf_path)
-					if name_is_title then
-						conf:set("name",   package.title)
-					else
-						conf:set("title",  package.title)
-						conf:set("name",   package.name)
+					conf:set("title", package.title)
+					if not name_is_title then
+						conf:set("name", package.name)
 					end
 					if not conf:get("description") then
 						conf:set("description", package.short_description)
@@ -199,7 +207,7 @@ local function get_raw_dependencies(package)
 	local url_fmt = "/api/packages/%s/dependencies/?only_hard=1&protocol_version=%s&engine_version=%s"
 	local version = core.get_version()
 	local base_url = core.settings:get("contentdb_url")
-	local url = base_url .. url_fmt:format(package.id, core.get_max_supp_proto(), version.string)
+	local url = base_url .. url_fmt:format(package.url_part, core.get_max_supp_proto(), urlencode(version.string))
 
 	local response = http.fetch_sync({ url = url })
 	if not response.succeeded then
@@ -350,7 +358,7 @@ function install_dialog.get_formspec()
 			selected_game_idx = i
 		end
 
-		games[i] = core.formspec_escape(games[i].name)
+		games[i] = core.formspec_escape(games[i].title)
 	end
 
 	local selected_game = pkgmgr.games[selected_game_idx]
@@ -400,7 +408,7 @@ function install_dialog.get_formspec()
 		"container[0.375,0.70]",
 
 		"label[0,0.25;", fgettext("Base Game:"), "]",
-		"dropdown[2,0;4.25,0.5;gameid;", table.concat(games, ","), ";", selected_game_idx, "]",
+		"dropdown[2,0;4.25,0.5;selected_game;", table.concat(games, ","), ";", selected_game_idx, "]",
 
 		"label[0,0.8;", fgettext("Dependencies:"), "]",
 
@@ -451,9 +459,9 @@ function install_dialog.handle_submit(this, fields)
 		return true
 	end
 
-	if fields.gameid then
+	if fields.selected_game then
 		for _, game in pairs(pkgmgr.games) do
-			if game.name == fields.gameid then
+			if game.title == fields.selected_game then
 				core.settings:set("menu_last_game", game.id)
 				break
 			end
@@ -480,12 +488,10 @@ local confirm_overwrite = {}
 function confirm_overwrite.get_formspec()
 	local package = confirm_overwrite.package
 
-	return "size[11.5,4.5,true]" ..
-			"label[2,2;" ..
-			fgettext("\"$1\" already exists. Would you like to overwrite it?", package.name) .. "]"..
-			"style[install;bgcolor=red]" ..
-			"button[3.25,3.5;2.5,0.5;install;" .. fgettext("Overwrite") .. "]" ..
-			"button[5.75,3.5;2.5,0.5;cancel;" .. fgettext("Cancel") .. "]"
+	return confirmation_formspec(
+		fgettext("\"$1\" already exists. Would you like to overwrite it?", package.name),
+		'install', fgettext("Overwrite"),
+		'cancel', fgettext("Cancel"))
 end
 
 function confirm_overwrite.handle_submit(this, fields)
@@ -574,17 +580,16 @@ function store.load()
 	local base_url = core.settings:get("contentdb_url")
 	local url = base_url ..
 		"/api/packages/?type=mod&type=game&type=txp&protocol_version=" ..
-		core.get_max_supp_proto() .. "&engine_version=" .. version.string
+		core.get_max_supp_proto() .. "&engine_version=" .. urlencode(version.string)
 
 	for _, item in pairs(core.settings:get("contentdb_flag_blacklist"):split(",")) do
 		item = item:trim()
 		if item ~= "" then
-			url = url .. "&hide=" .. item
+			url = url .. "&hide=" .. urlencode(item)
 		end
 	end
 
-	local timeout = tonumber(core.settings:get("curl_file_download_timeout"))
-	local response = http.fetch_sync({ url = url, timeout = timeout })
+	local response = http.fetch_sync({ url = url })
 	if not response.succeeded then
 		return
 	end
@@ -594,11 +599,15 @@ function store.load()
 
 	for _, package in pairs(store.packages_full) do
 		local name_len = #package.name
+		-- This must match what store.update_paths() does!
+		package.id = package.author:lower() .. "/"
 		if package.type == "game" and name_len > 5 and package.name:sub(name_len - 4) == "_game" then
-			package.id = package.author:lower() .. "/" .. package.name:sub(1, name_len - 5)
+			package.id = package.id .. package.name:sub(1, name_len - 5)
 		else
-			package.id = package.author:lower() .. "/" .. package.name
+			package.id = package.id .. package.name
 		end
+
+		package.url_part = urlencode(package.author) .. "/" .. urlencode(package.name)
 
 		if package.aliases then
 			for _, alias in ipairs(package.aliases) do
@@ -849,8 +858,7 @@ function store.get_formspec(dlgdata)
 			formspec[#formspec + 1] = "cdb_downloading.png;3;400;]"
 		elseif package.queued then
 			formspec[#formspec + 1] = left_base
-			formspec[#formspec + 1] = core.formspec_escape(defaulttexturedir)
-			formspec[#formspec + 1] = "cdb_queued.png;queued]"
+			formspec[#formspec + 1] = "cdb_queued.png;queued;]"
 		elseif not package.path then
 			local elem_name = "install_" .. i .. ";"
 			formspec[#formspec + 1] = "style[" .. elem_name .. "bgcolor=#71aa34]"
@@ -1013,9 +1021,9 @@ function store.handle_submit(this, fields)
 		end
 
 		if fields["view_" .. i] then
-			local url = ("%s/packages/%s/%s?protocol_version=%d"):format(
-					core.settings:get("contentdb_url"),
-					package.author, package.name, core.get_max_supp_proto())
+			local url = ("%s/packages/%s?protocol_version=%d"):format(
+					core.settings:get("contentdb_url"), package.url_part,
+					core.get_max_supp_proto())
 			core.open_url(url)
 			return true
 		end

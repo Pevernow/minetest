@@ -11,13 +11,14 @@ endif()
 project(minetest)
 set(PROJECT_NAME_CAPITALIZED "Minetest")
 
-set(CMAKE_CXX_STANDARD 11)
-set(GCC_MINIMUM_VERSION "4.8")
-set(CLANG_MINIMUM_VERSION "3.4")
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
+set(GCC_MINIMUM_VERSION "5.1")
+set(CLANG_MINIMUM_VERSION "3.5")
 
 # Also remember to set PROTOCOL_VERSION in network/networkprotocol.h when releasing
 set(VERSION_MAJOR 5)
-set(VERSION_MINOR 5)
+set(VERSION_MINOR 6)
 set(VERSION_PATCH 0)
 set(VERSION_EXTRA "" CACHE STRING "Stuff to append to version string")
 
@@ -51,6 +52,7 @@ set(RUN_IN_PLACE ${DEFAULT_RUN_IN_PLACE} CACHE BOOL
 set(BUILD_CLIENT TRUE CACHE BOOL "Build client")
 set(BUILD_SERVER FALSE CACHE BOOL "Build server")
 set(BUILD_UNITTESTS TRUE CACHE BOOL "Build unittests")
+set(BUILD_BENCHMARKS FALSE CACHE BOOL "Build benchmarks")
 
 set(WARN_ALL TRUE CACHE BOOL "Enable -Wall for Release build")
 
@@ -62,13 +64,18 @@ endif()
 # Included stuff
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
 
-
 set(IRRLICHTMT_BUILD_DIR "" CACHE PATH "Path to IrrlichtMt build directory.")
+
+
+if(MINGW AND CMAKE_HOST_SYSTEM_NAME MATCHES "Windows" AND IRRLICHTMT_BUILD_DIR STREQUAL "")
+set(IRRLICHTMT_BUILD_DIR "C:/Program Files (x86)/Irrlicht/lib/cmake/IrrlichtMt")
+endif()
+
 if(NOT "${IRRLICHTMT_BUILD_DIR}" STREQUAL "")
 	find_package(IrrlichtMt QUIET
 		PATHS "${IRRLICHTMT_BUILD_DIR}"
 		NO_DEFAULT_PATH
-)
+	)
 
 	if(NOT TARGET IrrlichtMt::IrrlichtMt)
 		# find_package() searches certain subdirectories. ${PATH}/cmake is not
@@ -76,7 +83,6 @@ if(NOT "${IRRLICHTMT_BUILD_DIR}" STREQUAL "")
 		# IrrlichtMtConfig.cmake
 		message(FATAL_ERROR "Could not find IrrlichtMtConfig.cmake in ${IRRLICHTMT_BUILD_DIR}/cmake.")
 	endif()
-# This is done here so that relative search paths are more reasonable
 elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/irrlichtmt")
 	message(STATUS "Using user-provided IrrlichtMt at subdirectory 'lib/irrlichtmt'")
 	if(BUILD_CLIENT)
@@ -106,9 +112,9 @@ else()
 
 		include(MinetestFindIrrlichtHeaders)
 		if(NOT IRRLICHT_INCLUDE_DIR)
-			message(FATAL_ERROR "Irrlicht or IrrlichtMt headers are required to build the server, but none found.\n${explanation_msg}")
+			message(FATAL_ERROR "IrrlichtMt headers are required to build the server, but none found.\n${explanation_msg}")
 		endif()
-		message(STATUS "Found Irrlicht headers: ${IRRLICHT_INCLUDE_DIR}")
+		message(STATUS "Found IrrlichtMt headers: ${IRRLICHT_INCLUDE_DIR}")
 		add_library(IrrlichtMt::IrrlichtMt INTERFACE IMPORTED)
 		# Note that we can't use target_include_directories() since that doesn't work for IMPORTED targets before CMake 3.11
 		set_target_properties(IrrlichtMt::IrrlichtMt PROPERTIES
@@ -267,11 +273,6 @@ if(NOT USE_LUAJIT)
 	add_subdirectory(lib/bitop)
 endif()
 
-# JsonCpp doesn't compile well on GCC 4.8
-if(NOT USE_SYSTEM_JSONCPP)
-	set(GCC_MINIMUM_VERSION "4.9")
-endif()
-
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS "${GCC_MINIMUM_VERSION}")
 		message(FATAL_ERROR "Insufficient gcc version, found ${CMAKE_CXX_COMPILER_VERSION}. "
@@ -284,9 +285,12 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "(Apple)?Clang")
 	endif()
 endif()
 
+if(BUILD_BENCHMARKS)
+	add_subdirectory(lib/catch2)
+endif()
+
 # Subdirectories
 # Be sure to add all relevant definitions above this
-
 add_subdirectory(src)
 
 

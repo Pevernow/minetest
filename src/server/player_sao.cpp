@@ -319,8 +319,14 @@ std::string PlayerSAO::generateUpdatePhysicsOverrideCommand() const
 	return os.str();
 }
 
-void PlayerSAO::setBasePosition(const v3f &position)
+void PlayerSAO::setBasePosition(v3f position)
 {
+	// It's not entirely clear which parts of the network protocol still use
+	// v3f1000, but the script API enforces its bound on all float vectors
+	// (maybe it shouldn't?). For that reason we need to make sure the position
+	// isn't ever set to values that fail this restriction.
+	clampToF1000(position);
+
 	if (m_player && position != m_base_position)
 		m_player->setDirty(true);
 
@@ -344,7 +350,7 @@ void PlayerSAO::setPos(const v3f &pos)
 
 	setBasePosition(pos);
 	// Movement caused by this command is always valid
-	m_last_good_position = pos;
+	m_last_good_position = getBasePosition();
 	m_move_pool.empty();
 	m_time_from_last_teleport = 0.0;
 	m_env->getGameDef()->SendMovePlayer(m_peer_id);
@@ -357,7 +363,7 @@ void PlayerSAO::moveTo(v3f pos, bool continuous)
 
 	setBasePosition(pos);
 	// Movement caused by this command is always valid
-	m_last_good_position = pos;
+	m_last_good_position = getBasePosition();
 	m_move_pool.empty();
 	m_time_from_last_teleport = 0.0;
 	m_env->getGameDef()->SendMovePlayer(m_peer_id);
@@ -463,36 +469,33 @@ void PlayerSAO::rightClick(ServerActiveObject *clicker)
 	m_env->getScriptIface()->on_rightclickplayer(this, clicker);
 }
 
-void PlayerSAO::setHP(s32 hp, const PlayerHPChangeReason &reason, bool send)
+void PlayerSAO::setHP(s32 target_hp, const PlayerHPChangeReason &reason, bool from_client)
 {
-	if (hp == (s32)m_hp)
+	target_hp = rangelim(target_hp, 0, U16_MAX);
+
+	if (target_hp == m_hp)
 		return; // Nothing to do
 
-	if (m_hp <= 0 && hp < (s32)m_hp)
-		return; // Cannot take more damage
+	s32 hp_change = m_env->getScriptIface()->on_player_hpchange(this, target_hp - (s32)m_hp, reason);
 
-	{
-		s32 hp_change = m_env->getScriptIface()->on_player_hpchange(this, hp - m_hp, reason);
-		if (hp_change == 0)
-			return;
+	s32 hp = (s32)m_hp + std::min(hp_change, U16_MAX); // Protection against s32 overflow
+	hp = rangelim(hp, 0, U16_MAX);
 
-		hp = m_hp + hp_change;
-	}
+	if (hp > m_prop.hp_max)
+		hp = m_prop.hp_max;
 
-	s32 oldhp = m_hp;
-	hp = rangelim(hp, 0, m_prop.hp_max);
-
-	if (hp < oldhp && isImmortal())
-		return; // Do not allow immortal players to be damaged
-
-	m_hp = hp;
+	if (hp < m_hp && isImmortal())
+		hp = m_hp; // Do not allow immortal players to be damaged
 
 	// Update properties on death
-	if ((hp == 0) != (oldhp == 0))
+	if ((hp == 0) != (m_hp == 0))
 		m_properties_sent = false;
 
-	if (send)
-		m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
+	if (hp != m_hp) {
+		m_hp = hp;
+		m_env->getGameDef()->HandlePlayerHPChange(this, reason);
+	} else if (from_client)
+		m_env->getGameDef()->SendPlayerHP(this, true);
 }
 
 void PlayerSAO::setBreath(const u16 breath, bool send)
